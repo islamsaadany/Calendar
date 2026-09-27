@@ -215,8 +215,31 @@ function seed(){
   ];
 }
 function load(){try{const r=localStorage.getItem(KEY);if(r)return JSON.parse(r)}catch(e){}const s=seed();persist(s);return s}
-function persist(list){try{localStorage.setItem(KEY,JSON.stringify(list||bookings))}catch(e){}}
-let bookings=load();
+function persist(list){if(shared)return;try{localStorage.setItem(KEY,JSON.stringify(list||bookings))}catch(e){}}
+
+/* shared store (api/bookings.js); falls back to this browser's localStorage if the API is unreachable */
+const API='/api/bookings';
+let shared=false,bookings=[];
+async function api(method,body,q=''){
+  const r=await fetch(API+q,{method,headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined,cache:'no-store'});
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok)throw Object.assign(new Error(j.error||'Server error — please try again'),{status:r.status,data:j});
+  return j;
+}
+async function sync(){
+  try{bookings=(await api('GET')).bookings;shared=true}
+  catch(e){if(!shared)bookings=load()}
+}
+// one-time upload of meetings people booked before the app was shared (local ids start with "b", demo ones with "s")
+async function migrateLocal(){
+  const done=KEY+'-uploaded';
+  try{if(localStorage.getItem(done))return;var local=JSON.parse(localStorage.getItem(KEY)||'[]')}catch(e){return}
+  const mine=local.filter(b=>/^b/.test(b.id)&&!bookings.some(x=>x.id===b.id));
+  let n=0;
+  for(const b of mine){try{bookings=(await api('POST',b)).bookings;n++}catch(e){}}
+  try{localStorage.setItem(done,'1')}catch(e){}
+  if(n)toast(`Shared ${n} meeting${n>1?'s':''} saved in this browser`);
+}
 let state={view:'week',cursor:new Date(),room:'all',person:'all'};
 let lastOrg='p1';
 
@@ -235,6 +258,7 @@ function renderBar(){
       : `<span class="sw"><i style="background:var(--free);border:1px solid #bfe3cd"></i>Available</span><span class="sw"><i style="background:color-mix(in srgb,${room(state.room).color} 25%,#fff);border-left:3px solid ${room(state.room).color}"></i>Booked</span>`;
   }else h+=`<span>Each meeting shows time · duration · room · who's attending</span>`;
   h+='</div>';
+  if(!shared)h+=`<div class="warn" style="width:100%">Can't reach the shared calendar — bookings are only saved in this browser and others won't see them.</div>`;
   $('#bar').innerHTML=h;
   $('#personSel').onchange=e=>{state.person=e.target.value;render()};
 }
@@ -379,7 +403,7 @@ function refresh(){
   $('#fMsgs').innerHTML=msgs.join('');
 }
 function formError(t){$('#fMsgs').insertAdjacentHTML('afterbegin',`<div class="err">${t}</div>`)}
-function saveForm(){
+async function saveForm(){
   refresh();
   form.title=$('#fTitle').value.trim();
   if(!form.date)return formError('Pick a date.');
@@ -391,7 +415,12 @@ function saveForm(){
   if(headcount()>r.cap)return formError(`${r.name} seats ${r.cap} — you have ${headcount()} people.`);
   const data={id:form.id||uid(),title:form.title||'Meeting',date:form.date,start:form.start,dur:form.dur,room:form.room,organizer:form.organizer,attendees:[...form.attendees].filter(p=>p!==form.organizer)};
   const i=bookings.findIndex(b=>b.id===data.id);
-  if(i>=0)bookings[i]=data;else bookings.push(data);
+  if(shared){
+    const btn=$('#fSave');btn.disabled=true;
+    try{bookings=(await api('POST',data)).bookings}
+    catch(e){if(e.data&&e.data.bookings)bookings=e.data.bookings;refresh();return formError(esc(e.message))}
+    finally{btn.disabled=false}
+  }else{if(i>=0)bookings[i]=data;else bookings.push(data)}
   lastOrg=form.organizer;persist();closeAll();render();
   toast(i>=0?'Meeting updated':`${r.name} booked · ${fmtT(data.start)}–${fmtT(data.start+data.dur)}`);
 }
@@ -426,10 +455,17 @@ $('#fOrg').onchange=e=>{form.organizer=e.target.value;form.attendees.delete(form
 $('#fPeople').onclick=e=>{const p=e.target.closest('[data-p]');if(!p||p.dataset.p===form.organizer)return;const id=p.dataset.p;form.attendees.has(id)?form.attendees.delete(id):form.attendees.add(id);refresh()};
 $('#fRooms').onclick=e=>{const r=e.target.closest('[data-r]');if(!r||r.disabled)return;form.room=r.dataset.r;refresh()};
 $('#fSave').onclick=saveForm;
-$('#fDel').onclick=()=>{if(!confirm('Cancel this meeting?'))return;bookings=bookings.filter(b=>b.id!==form.id);persist();closeAll();render();toast('Meeting cancelled')};
-setInterval(()=>{if(!document.querySelector('.back.show'))render()},60000);
+$('#fDel').onclick=async()=>{
+  if(!confirm('Cancel this meeting?'))return;
+  if(shared){try{bookings=(await api('DELETE',null,'?id='+encodeURIComponent(form.id))).bookings}catch(e){return formError(esc(e.message))}}
+  else bookings=bookings.filter(b=>b.id!==form.id);
+  persist();closeAll();render();toast('Meeting cancelled')};
+// pick up other people's changes
+async function tick(){await sync();if(!document.querySelector('.back.show'))render()}
+setInterval(tick,30000);
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')tick()});
 
-render();
+(async()=>{await sync();if(shared)await migrateLocal();render()})();
 </script>
 </body>
 </html>
