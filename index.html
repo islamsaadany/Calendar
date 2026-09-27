@@ -219,7 +219,7 @@ function persist(list){if(shared)return;try{localStorage.setItem(KEY,JSON.string
 
 /* shared store (api/bookings.js); falls back to this browser's localStorage if the API is unreachable */
 const API='/api/bookings';
-let shared=false,bookings=[];
+let shared=false,bookings=[],syncErr='';
 async function api(method,body,q=''){
   const r=await fetch(API+q,{method,headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined,cache:'no-store'});
   const j=await r.json().catch(()=>({}));
@@ -228,7 +228,7 @@ async function api(method,body,q=''){
 }
 async function sync(){
   try{bookings=(await api('GET')).bookings;shared=true}
-  catch(e){if(!shared)bookings=load()}
+  catch(e){syncErr=e.status===404?'API not found (404) — /api/bookings was not deployed.':e.message;if(!shared)bookings=load()}
 }
 // one-time upload of meetings people booked before the app was shared (local ids start with "b", demo ones with "s")
 async function migrateLocal(){
@@ -258,7 +258,7 @@ function renderBar(){
       : `<span class="sw"><i style="background:var(--free);border:1px solid #bfe3cd"></i>Available</span><span class="sw"><i style="background:color-mix(in srgb,${room(state.room).color} 25%,#fff);border-left:3px solid ${room(state.room).color}"></i>Booked</span>`;
   }else h+=`<span>Each meeting shows time · duration · room · who's attending</span>`;
   h+='</div>';
-  if(!shared)h+=`<div class="warn" style="width:100%">Can't reach the shared calendar — bookings are only saved in this browser and others won't see them.</div>`;
+  if(!shared)h+=`<div class="warn" style="width:100%">Can't reach the shared calendar — bookings are only saved in this browser and others won't see them.${syncErr?`<br><small>Reason: ${esc(syncErr)}</small>`:''}</div>`;
   $('#bar').innerHTML=h;
   $('#personSel').onchange=e=>{state.person=e.target.value;render()};
 }

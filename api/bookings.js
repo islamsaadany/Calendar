@@ -2,8 +2,13 @@
 // Bookings are kept in one Redis hash: field = booking id, value = booking JSON.
 const ROOMS = { nile: 12, giza: 8, luxor: 6, aswan: 4 }; // keep in sync with ROOMS in index.html
 const KEY = 'bookings';
-const REDIS_URL = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
-const REDIS_TOKEN = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
+// Vercel's Upstash integration may add a custom prefix (e.g. STORAGE_KV_REST_API_URL), so match on the suffix.
+const env = process.env;
+const URL_KEY = ['KV_REST_API_URL', 'UPSTASH_REDIS_REST_URL']
+  .concat(Object.keys(env).filter(k => /(KV_REST_API|REDIS_REST)_URL$/.test(k)))
+  .find(k => env[k]);
+const REDIS_URL = URL_KEY && env[URL_KEY];
+const REDIS_TOKEN = URL_KEY && env[URL_KEY.replace(/URL$/, 'TOKEN')];
 
 async function redis(...cmd) {
   const r = await fetch(REDIS_URL, {
@@ -52,7 +57,9 @@ function clean(b) {
 
 module.exports = async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
-  if (!REDIS_URL || !REDIS_TOKEN) return res.status(503).json({ error: 'Shared database is not configured' });
+  if (!REDIS_URL || !REDIS_TOKEN) {
+    return res.status(503).json({ error: 'Database not connected: no Upstash/KV REST URL + token environment variables found. Connect the database in Vercel → Storage, then redeploy.' });
+  }
   try {
     if (req.method === 'GET') return res.status(200).json({ bookings: await all() });
 
@@ -84,6 +91,6 @@ module.exports = async (req, res) => {
     return res.status(405).json({ error: 'Method not allowed' });
   } catch (e) {
     console.error(e);
-    return res.status(500).json({ error: 'Server error — please try again' });
+    return res.status(500).json({ error: `Database error: ${e.message}` });
   }
 };
